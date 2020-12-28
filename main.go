@@ -135,7 +135,7 @@ func GetDataLine() []DataLine {
 			} else if j == 2 {
 				strEncode := url.QueryEscape(s.Text())
 				strEncode = strings.Replace(strEncode, "%C2%A0", "%20", -1)
-				// strEncode = strings.Replace(strEncode, "+", "", -1)
+				strEncode = strings.Replace(strEncode, "+", "", -1)
 				name, _ = url.QueryUnescape(strEncode)
 			} else {
 				return
