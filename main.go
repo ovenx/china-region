@@ -13,16 +13,17 @@ import (
 	"strconv"
 	"strings"
 )
-type Province struct  {
-	Name string `json:"name"`
-	Code string `json:"code"`
-	CityList map[string]City `json:"city_list"`
+
+type Province struct {
+	Name   string `json:"name"`
+	Code   string `json:"code"`
+	Cities []City `json:"cities"`
 }
 
 type City struct {
-	Name string `json:"name"`
-	Code string `json:"code"`
-	AreaList map[string]Area `json:"area_list"`
+	Name  string `json:"name"`
+	Code  string `json:"code"`
+	Areas []Area `json:"areas"`
 }
 
 type Area struct {
@@ -30,9 +31,87 @@ type Area struct {
 	Code string `json:"code"`
 }
 
-func main () {
-	link := "http://www.mca.gov.cn/article/sj/xzqh/2020/2020/2020112010001.html"
-	res, err := http.Get(link)
+type DataLine struct {
+	Name  string
+	Code  string
+	Level int
+}
+
+const Link = "http://www.mca.gov.cn/article/sj/xzqh/2020/2020/2020112010001.html"
+
+func main() {
+
+	// get data
+	fmt.Println("start get data")
+	dataLine := GetDataLine()
+
+	// format data
+	data := GetFormatedData(dataLine)
+
+	// create json file
+	fmt.Println("start create json file")
+	jsonData, _ := json.MarshalIndent(&data, "", "  ")
+	WriteToFile("region.json", string(jsonData))
+
+	// create sql file
+	fmt.Println("start create sql file")
+	sql := "DROP TABLE IF EXISTS `region`;\n" +
+		"CREATE TABLE `region` (" +
+		"`id` int(11) NOT NULL AUTO_INCREMENT," +
+		"`code` int(11) NOT NULL COMMENT '行政代码'," +
+		"`name` varchar(50) NOT NULL COMMENT '名称'," +
+		"`level` tinyint(4) NOT NULL COMMENT '级别：1.省 2.市 3.区(县)'," +
+		"`parent` int(11) NOT NULL COMMENT '上级行政代码'," +
+		"PRIMARY KEY (`id`)," +
+		"UNIQUE KEY `code` (`code`)" +
+		") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='地区表';\n\n"
+
+	for _, proItem := range data {
+		sql += fmt.Sprintf("INSERT INTO `region`(`code`, `name`, `level`, `parent`) VALUES('%s', '%s', '%s', '%s');\n", proItem.Code, proItem.Name, "1", "0")
+		for _, cityItem := range proItem.Cities {
+			sql += fmt.Sprintf("INSERT INTO `region`(`code`, `name`, `level`, `parent`) VALUES('%s', '%s', '%s', '%s');\n", cityItem.Code, cityItem.Name, "2", proItem.Code)
+			for _, areaItem := range cityItem.Areas {
+				sql += fmt.Sprintf("INSERT INTO `region`(`code`, `name`, `level`, `parent`) VALUES('%s', '%s', '%s', '%s');\n", areaItem.Code, areaItem.Name, "3", cityItem.Code)
+			}
+		}
+	}
+	WriteToFile("region.sql", sql)
+	fmt.Println("done!")
+}
+
+func GetFormatedData(dataLine []DataLine) []Province {
+	data := make([]Province, 0)
+	province := Province{}
+	city := City{}
+	area := Area{}
+	for _, item := range dataLine {
+		if item.Level == 1 {
+			if (!reflect.DeepEqual(province, Province{})) {
+				if !reflect.DeepEqual(city, City{}) {
+					province.Cities = append(province.Cities, city)
+				}
+				data = append(data, province)
+			}
+			province = Province{Code: item.Code, Name: item.Name, Cities: []City{}}
+			city = City{}
+			area = Area{}
+		} else if item.Level == 2 {
+			if !reflect.DeepEqual(city, City{}) {
+				province.Cities = append(province.Cities, city)
+			}
+			city = City{Code: item.Code, Name: item.Name, Areas: []Area{}}
+			area = Area{}
+		} else {
+			area = Area{Code: item.Code, Name: item.Name}
+			city.Areas = append(city.Areas, area)
+		}
+	}
+	data = append(data, province)
+	return data
+}
+
+func GetDataLine() []DataLine {
+	res, err := http.Get(Link)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -40,17 +119,13 @@ func main () {
 	if res.StatusCode != 200 {
 		log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
 	}
-
-	// Load the HTML document
 	doc, err := goquery.NewDocumentFromReader(res.Body)
 	if err != nil {
 		log.Fatal(err)
 	}
-	data := make(map[string]Province, 0)
-	province := Province{}
-	city := City{}
-	area := Area {}
-	provinceCode := ""
+
+	dataLine := make([]DataLine, 0)
+	line := DataLine{}
 	doc.Find("tr[height=\"19\"]").Each(func(i int, s *goquery.Selection) {
 		code := ""
 		name := ""
@@ -66,32 +141,24 @@ func main () {
 				return
 			}
 		})
-		if name[: 1] != " " {
-			province = Province{Code: code, Name: strings.Replace(name, " ", "", -1), CityList: map[string]City{}}
-			provinceCode = code
-			city = City{}
-			area = Area{}
+		filterName := strings.Replace(name, " ", "", -1)
+		if name[:1] != " " {
+			line = DataLine{Code: code, Name: filterName, Level: 1}
+			dataLine = append(dataLine, line)
 		} else if name[1:2] != " " {
-			city = City{Code: code, Name: strings.Replace(name, " ", "", -1), AreaList: map[string]Area{}}
-			province.CityList[code] = city
+			line = DataLine{Code: code, Name: filterName, Level: 2}
+			dataLine = append(dataLine, line)
 		} else {
-			if reflect.DeepEqual(city, City{}){
-				cityCode, _ := strconv.Atoi(provinceCode)
-				cityCodeStr := strconv.Itoa(cityCode + 100)
-				city = City{Code: cityCodeStr, Name: province.Name, AreaList: map[string]Area{}}
-				province.CityList[cityCodeStr] = city
+			if line.Level == 1 {
+				pCode, _ := strconv.Atoi(line.Code)
+				line = DataLine{Code: strconv.Itoa(pCode + 100), Name: line.Name, Level: 2}
+				dataLine = append(dataLine, line)
 			}
-			area = Area{Code: code, Name: strings.Replace(name, " ", "", -1)}
-			city.AreaList[code] = area
+			line = DataLine{Code: code, Name: filterName, Level: 3}
+			dataLine = append(dataLine, line)
 		}
-
-		data[provinceCode] = province
 	})
-	// fmt.Println(data)
-	jsonPath := "region.json"
-	jsonData,_ := json.MarshalIndent(&data, "", "  ")
-	fmt.Println(string(jsonData))
-	WriteToFile(jsonPath, string(jsonData))
+	return dataLine
 }
 
 func WriteToFile(filePath string, str string) {
